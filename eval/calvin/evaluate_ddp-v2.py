@@ -15,11 +15,15 @@ import os
 import hydra
 from omegaconf import OmegaConf
 from termcolor import colored
+import numpy as np
 
 sys.path.insert(0, Path(__file__).absolute().parents[2].as_posix())
+sys.path.insert(0, "/home/yewon0522/RoboVLMs/calvin/calvin_models")
+sys.path.insert(0, "/home/yewon0522/RoboVLMs/calvin")
+
 import torch.multiprocessing as mp
 
-os.environ["PYOPENGL_PLATFORM"] = "osmesa"
+#os.environ["PYOPENGL_PLATFORM"] = "osmesa"
 import pyrender
 
 from calvin_agent.evaluation.multistep_sequences import get_sequences
@@ -58,7 +62,7 @@ os.system(f"sudo chmod 777 {CACHE_ROOT}")
 
 def make_env(dataset_path):
     val_folder = Path(dataset_path) / "validation"
-    return get_env(val_folder, show_gui=False)
+    return get_env(val_folder, show_gui=True)
 
 
 def setup():
@@ -79,7 +83,7 @@ def evaluate_policy(
 ):
     """Run this function to evaluate a model on the CALVIN challenge."""
     # conf_dir = Path("path/to/calvin/calvin_models") / "conf"
-    conf_dir = Path("/mnt/bn/robotics/resources/calvin/calvin_models") / "conf"
+    conf_dir = Path("/home/yewon0522/RoboVLMs/calvin/calvin_models") / "conf"
     task_cfg = OmegaConf.load(
         conf_dir / "callbacks/rollout/tasks/new_playtable_tasks.yaml"
     )
@@ -316,7 +320,15 @@ def rollout(
     start_info = env.get_info()
 
     for _ in range(EP_LEN):
+        #action = model.step(obs, lang_annotation)
+        #obs, _, _, current_info = env.step(action)
         action = model.step(obs, lang_annotation)
+
+        if isinstance(action, torch.Tensor):
+            action = action.detach().float().cpu().numpy()
+        elif not isinstance(action, np.ndarray):
+            action = np.array(action, dtype=np.float32)
+
         obs, _, _, current_info = env.step(action)
         if debug:
             img_copy = copy.deepcopy(obs["rgb_obs"]["rgb_static"])
@@ -471,7 +483,14 @@ def main():
         debug=args.debug_model,
     )
     args.dataset_path = "/".join(configs["val_dataset"]["data_dir"].split("/")[:-1])
+
+    print("configs[val_dataset] =", configs["val_dataset"])
+    print("top-level data_dir =", configs.get("data_dir", None))
+    print("top-level annotation_file =", configs.get("annotation_file", None))
+    print("args.dataset_path =", args.dataset_path)
+    print("final val_folder =", str(Path(args.dataset_path) / "validation"))
     env = make_env(args.dataset_path)
+
 
     # TODO check if this code is needed
     ckpt_step = ckpt_path.split("/")[-1].split(".")[0]

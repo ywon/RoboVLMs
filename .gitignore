@@ -189,6 +189,7 @@ src/
 pretrained_models/OpenFlamingo-3B-vitl-mpt1b-langinstruct
 pretrained_models/llava-v1.6-vicuna-7b
 pretrained_models/
+pretrained/
 results/
 results_v*/
 # bash/
@@ -198,3 +199,7 @@ runs/
 .vlms/
 .DS_Store
 .DS_Store?
+
+eval/logs/
+calvin/
+after_open_flamingo.txt

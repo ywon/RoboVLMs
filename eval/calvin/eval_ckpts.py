@@ -1,11 +1,17 @@
 import os
+from pathlib import Path
+
+project_root = Path(__file__).resolve().parent.parent.parent
+
+config_path = project_root / "pretrained" / "robovlms" / "configs" / "kosmos_ph_oxe-eval.json"
+ckpt_path = project_root / "pretrained" / "robovlms" / "checkpoints" / "kosmos_ph_calvin_abcd.pt"
 
 ckpt_paths = [
     (
-        "path/to/VLA-Checkpoint-{epoch}-{steps}.ckpt",
-        "path/to/VLA-Checkpoint-config.json",
+        ckpt_path, config_path
     )
 ]
+
 
 for i, (ckpt, config) in enumerate(ckpt_paths):
     print("evaluating checkpoint {}".format(ckpt))
