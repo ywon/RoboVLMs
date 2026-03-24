@@ -6,8 +6,8 @@ import pyrender
 
 from calvin_env.envs.play_table_env import get_env
 
-path = "calvin/dataset/calvin_debug_dataset/calvin_debug_dataset/validation"
-env = get_env(path, show_gui=True)
+path = "calvin/dataset/calvin_debug_dataset/validation"
+env = get_env(path, show_gui=False)
 print(env.get_obs())
 
 input("Press Enter to close...")

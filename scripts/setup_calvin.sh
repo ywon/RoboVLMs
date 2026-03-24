@@ -28,6 +28,6 @@ pip install numpy==1.21.0
 # Download dataset
 cd ${CALVIN_ROOT}/dataset
 sh download_data.sh debug
-# sh download_data.sh D
-# sh download_data.sh ABC
-# sh download_data.sh ABCD
+#sh download_data.sh D
+#sh download_data.sh ABC
+#sh download_data.sh ABCD

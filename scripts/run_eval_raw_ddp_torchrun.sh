@@ -5,7 +5,7 @@ export MESA_GL_VERSION_OVERRIDE=4.1
 export TORCH_NCCL_BLOCKING_WAIT=1
 export NCCL_BLOCKING_WAIT=1
 
-REPO_ROOT="/home/yewon0522/RoboVLMs"
+REPO_ROOT="/home/yewon/RoboVLMs"
 
 ckpt_dir="$1"
 config_path="$2"

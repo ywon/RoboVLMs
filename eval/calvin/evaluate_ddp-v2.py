@@ -18,8 +18,8 @@ from termcolor import colored
 import numpy as np
 
 sys.path.insert(0, Path(__file__).absolute().parents[2].as_posix())
-sys.path.insert(0, "/home/yewon0522/RoboVLMs/calvin/calvin_models")
-sys.path.insert(0, "/home/yewon0522/RoboVLMs/calvin")
+sys.path.insert(0, "/home/yewon/RoboVLMs/calvin/calvin_models")
+sys.path.insert(0, "/home/yewon/RoboVLMs/calvin")
 
 import torch.multiprocessing as mp
 
@@ -62,7 +62,7 @@ os.system(f"sudo chmod 777 {CACHE_ROOT}")
 
 def make_env(dataset_path):
     val_folder = Path(dataset_path) / "validation"
-    return get_env(val_folder, show_gui=True)
+    return get_env(val_folder, show_gui=False)
 
 
 def setup():
@@ -83,7 +83,7 @@ def evaluate_policy(
 ):
     """Run this function to evaluate a model on the CALVIN challenge."""
     # conf_dir = Path("path/to/calvin/calvin_models") / "conf"
-    conf_dir = Path("/home/yewon0522/RoboVLMs/calvin/calvin_models") / "conf"
+    conf_dir = Path("/home/yewon/RoboVLMs/calvin/calvin_models") / "conf"
     task_cfg = OmegaConf.load(
         conf_dir / "callbacks/rollout/tasks/new_playtable_tasks.yaml"
     )
