@@ -26,7 +26,8 @@ torchrun --nnodes=1 --nproc_per_node=$GPUS_PER_NODE --master_port=6067 \
     --config_path "$config_path" \
     --ckpt_path "$ckpt_dir" \
     --ckpt_idx 0 \
-    --raw_calvin
+    --raw_calvin \
+    --debug
 '''
 # Run
 #conda activate robovlm

@@ -12,7 +12,7 @@ import torch
 import torch.distributed as dist
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.trainer import Trainer
-from lightning.pytorch.loggers import TensorBoardLogger, CSVLogger
+from lightning.pytorch.loggers import TensorBoardLogger, CSVLogger, WandbLogger
 from lightning.pytorch.strategies import DDPStrategy
 from lightning import seed_everything
 
@@ -80,6 +80,16 @@ def init_trainer_config(configs):
                 loggers.append(TensorBoardLogger(configs['log_dir'].as_posix(), name=exp_name))
             elif logger == 'csv':
                 loggers.append(CSVLogger(configs['log_dir'].as_posix(), name=exp_name))
+            elif logger == 'wandb':
+                loggers.append(
+                    WandbLogger(
+                        project=configs.get('wandb_project', 'robovlms'),
+                        name=configs.get('wandb_name', exp_name),
+                        save_dir=configs['log_dir'],
+                        offline=configs.get('wandb_offline', False),
+                        entity=configs.get('wandb_entity', None),
+                    )
+                )
             else:
                 raise NotImplementedError(f'Unknown logger: {logger}')
 

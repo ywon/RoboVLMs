@@ -23,6 +23,26 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 
+class _PyhashCompat:
+    @staticmethod
+    def fnv1_32():
+        def _hash(x):
+            if not isinstance(x, (bytes, bytearray)):
+                x = str(x).encode("utf-8")
+            h = hashlib.md5(x).hexdigest()
+            return int(h[:8], 16)
+        return _hash
+
+    @staticmethod
+    def murmur3_32():
+        def _hash(x):
+            if not isinstance(x, (bytes, bytearray)):
+                x = str(x).encode("utf-8")
+            h = hashlib.md5(x).hexdigest()
+            return int(h[:8], 16)
+        return _hash
+
+
 try:
     from calvin_agent.datasets.utils.episode_utils import (
         get_state_info_dict,
@@ -33,15 +53,14 @@ try:
         process_state,
     )
     from calvin_agent.datasets.utils.episode_utils import lookup_naming_pattern
-
-    import pyhash
+    import hashlib
     import torch
     from torch.utils.data import Dataset
     from robovlms.data.data_utils import get_prompt_builder, world_to_tcp_frame
     from robovlms.model.policy_head.action_tokenizer import ActionTokenizer
-
-    hasher = pyhash.fnv1_32()
+    hasher = _PyhashCompat().fnv1_32()
     logger = logging.getLogger(__name__)
+
 except:
     pass
 
