@@ -370,7 +370,7 @@ def experiment(variant):
         x_mean=variant.get('x_mean', 0),
         x_std=variant.get('x_std', 1),
         weights=variant.get('train_weights', None),
-        tcp_rel=variant.get('tcp_rel', False),
+        tcp_rel=variant.get('tcp_rel', True),
         model_name=variant.get('model', 'flamingo'),
     )
 
