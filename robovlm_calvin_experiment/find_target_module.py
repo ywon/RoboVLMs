@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import importlib
 import torch
+import torch.nn as nn
 import torch.distributed as dist
 
 from robovlms.train.base_trainer import BaseTrainer
@@ -74,12 +75,101 @@ def find_lora_target_root(model):
     raise ValueError("Could not find a suitable root module for LoRA.")
 
 
+def summarize_trainable_params(model):
+    total_params = 0
+    trainable_params = 0
+
+    trainable_names = []
+    vision_trainable = []
+    text_trainable = []
+    other_trainable = []
+
+    for name, param in model.named_parameters():
+        n = param.numel()
+        total_params += n
+
+        if param.requires_grad:
+            trainable_params += n
+            trainable_names.append(name)
+
+            lname = name.lower()
+            if "vision" in lname or "image" in lname or "visual" in lname:
+                vision_trainable.append(name)
+            elif "text" in lname or "language" in lname or "llm" in lname or "lm" in lname:
+                text_trainable.append(name)
+            else:
+                other_trainable.append(name)
+
+    print("\n[INFO] ===== parameter summary =====")
+    print(f"total params:      {total_params:,}")
+    print(f"trainable params:  {trainable_params:,}")
+    print(f"trainable ratio:   {100.0 * trainable_params / total_params:.4f}%")
+
+    print("\n[INFO] ===== trainable counts by rough group =====")
+    print(f"vision-like trainable params: {len(vision_trainable)} tensors")
+    print(f"text-like trainable params:   {len(text_trainable)} tensors")
+    print(f"other trainable params:       {len(other_trainable)} tensors")
+
+    print("\n[INFO] ===== first 100 trainable parameter names =====")
+    for name in trainable_names[:100]:
+        print(name)
+
+    print("\n[INFO] ===== vision-related trainable parameter names =====")
+    if vision_trainable:
+        for name in vision_trainable[:200]:
+            print(name)
+    else:
+        print("(none)")
+
+    print("\n[INFO] ===== text-related trainable parameter names =====")
+    if text_trainable:
+        for name in text_trainable[:200]:
+            print(name)
+    else:
+        print("(none)")
+
+    print("\n[INFO] ===== other trainable parameter names =====")
+    if other_trainable:
+        for name in other_trainable[:200]:
+            print(name)
+    else:
+        print("(none)")
+
+
+def inspect_linear_modules(root_module):
+    print("\n[INFO] ===== full linear module names =====")
+    candidate_targets = set()
+
+    for name, module in root_module.named_modules():
+        if isinstance(module, nn.Linear):
+            print(name)
+
+            parts = name.split(".")
+            if parts[-1] == "base_layer" and len(parts) >= 2:
+                candidate_targets.add(parts[-2])
+            elif "lora_A" in parts or "lora_B" in parts:
+                continue
+            else:
+                candidate_targets.add(parts[-1])
+
+    print("\n[INFO] ===== candidate target_modules =====")
+    for name in sorted(candidate_targets):
+        print(name)
+
+
 def main():
-    config_path = "/home/yewon/RoboVLMs/pretrained/robovlms/configs/kosmos_ph_finetune.json"          
-    model_load_path = "/home/yewon/RoboVLMs/pretrained/robovlms/checkpoints/kosmos_ph_oxe-pretrain.pt"                    
+    config_path = "/home/yewon/RoboVLMs/pretrained/robovlms/configs/kosmos_ph_finetune.json"
+    model_load_path = "/home/yewon/RoboVLMs/pretrained/robovlms/checkpoints/kosmos_ph_oxe-pretrain.pt"
 
     variant = load_config(config_path)
     variant = maybe_override_dataset_path(variant)
+
+    print("\n[INFO] ===== config summary =====")
+    print("train_vision:", variant.get("train_setup", {}).get("train_vision"))
+    print("freeze_backbone:", variant.get("train_setup", {}).get("freeze_backbone"))
+    print("lora enabled:", variant.get("lora", {}).get("enabled"))
+    print("lora targets:", variant.get("lora", {}).get("target_modules"))
+    print("freeze_non_lora:", variant.get("lora", {}).get("freeze_non_lora"))
 
     model = BaseTrainer.from_checkpoint(
         model_load_path or variant.get("model_load_path", None),
@@ -92,16 +182,8 @@ def main():
     print(f"\n[INFO] LoRA root: {root_name}")
     print(f"[INFO] root type: {type(root_module)}")
 
-    print("\n[INFO] ===== full linear module names =====")
-    linear_suffixes = set()
-    for name, module in root_module.named_modules():
-        if isinstance(module, torch.nn.Linear):
-            print(name)
-            linear_suffixes.add(name.split(".")[-1])
-
-    print("\n[INFO] ===== candidate target_modules =====")
-    for name in sorted(linear_suffixes):
-        print(name)
+    inspect_linear_modules(root_module)
+    summarize_trainable_params(model)
 
 
 if __name__ == "__main__":
