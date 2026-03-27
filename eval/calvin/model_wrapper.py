@@ -21,9 +21,54 @@ from robovlms.data.data_utils import (
 )
 from queue import Queue
 from robovlms.model.policy_head.action_tokenizer import ActionTokenizer
+import torch.nn as nn
+from peft import LoraConfig, get_peft_model, TaskType
 
 fwd_decay_ratio = 1
 
+def collect_all_linear_target_names(root_module):
+    target_names = set()
+    for name, module in root_module.named_modules():
+        if isinstance(module, nn.Linear):
+            parts = name.split(".")
+            if not parts:
+                continue
+            if parts[-1] == "base_layer" and len(parts) >= 2:
+                target_names.add(parts[-2])
+            elif "lora_A" in parts or "lora_B" in parts:
+                continue
+            else:
+                target_names.add(parts[-1])
+    return sorted(target_names)
+
+
+def apply_eval_lora(model, lora_cfg):
+    if lora_cfg is None or not lora_cfg.get("enabled", False):
+        return model
+
+    target_modules = lora_cfg.get("target_modules", ["q_proj", "v_proj"])
+    if isinstance(target_modules, str) and target_modules.lower() == "all-linear":
+        target_modules = collect_all_linear_target_names(model.model)
+
+    task_type_str = lora_cfg.get("task_type", "CAUSAL_LM").upper()
+    task_type_map = {
+        "CAUSAL_LM": TaskType.CAUSAL_LM,
+        "SEQ_2_SEQ_LM": TaskType.SEQ_2_SEQ_LM,
+        "FEATURE_EXTRACTION": TaskType.FEATURE_EXTRACTION,
+    }
+    task_type = task_type_map.get(task_type_str, TaskType.CAUSAL_LM)
+
+    peft_config = LoraConfig(
+        r=lora_cfg.get("r", 16),
+        lora_alpha=lora_cfg.get("alpha", 32),
+        lora_dropout=lora_cfg.get("dropout", 0.05),
+        bias=lora_cfg.get("bias", "none"),
+        target_modules=target_modules,
+        task_type=task_type,
+    )
+
+    model.model.model = get_peft_model(model.model.model, peft_config)
+    return model
 
 class CustomModel:
     # model option
@@ -37,6 +82,9 @@ class CustomModel:
         debug=False,
         action_ensemble=False,
     ):
+        if "train_setup" in configs and configs["train_setup"] is not None:
+            configs["train_setup"]["lora_enable"] = False
+
         self.model = BaseTrainer(configs=configs)
         self.init_config(ckpt_path, configs, device, save_dir, raw_calvin, debug)
         # self.model.model.lm_head.window_size = 1
@@ -55,6 +103,7 @@ class CustomModel:
                     package_dir
                 )
             )
+        self.model = apply_eval_lora(self.model, configs.get("lora", {}))
 
         if not self.debug:
             ckpt = torch.load(ckpt_path, map_location="cpu")
@@ -66,6 +115,19 @@ class CustomModel:
                 raise KeyError("no checkpoint dict in the loaded pretrain parameters")
 
             new_state_dict = self.convert_old_state_dict(new_state_dict)
+
+            print("===== MODEL KEYS =====")
+            for i, k in enumerate(self.model.state_dict().keys()):
+                print(k)
+                if i >= 20:
+                    break
+
+            print("===== CKPT KEYS =====")
+            for i, k in enumerate(new_state_dict.keys()):
+                print(k)
+                if i >= 20:
+                    break
+
             msg = self.model.load_state_dict(new_state_dict, strict=False)
             print(f"CKPT Loaded \n {msg}")
 
