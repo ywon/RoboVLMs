@@ -205,3 +205,8 @@ eval/logs/
 calvin/
 after_open_flamingo.txt
 LLaVA/
+eda_sceneD_4tasks/
+
+robovlm_calvin_experiment/eda
+robovlm_calvin_experiment/train_test_envD
+robovlm_calvin_experiment/validation_test_envD

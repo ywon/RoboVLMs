@@ -1,4 +1,5 @@
 import os
+import re
 import argparse
 import json
 from pathlib import Path
@@ -271,7 +272,7 @@ def collect_all_linear_target_names(root_module):
     target_names = [n for n in sorted(target_names) if n not in blacklist]
     return target_names
 
-
+'''
 def apply_lora_to_model(model, lora_cfg: Dict[str, Any]):
     if not lora_cfg.get("enabled", False):
         print("[INFO] LoRA disabled.")
@@ -335,7 +336,68 @@ def apply_lora_to_model(model, lora_cfg: Dict[str, Any]):
     count_trainable_parameters(model)
     print_lora_trainable_params(model)
     return model
+'''
+def apply_lora_to_model(model, lora_cfg):
+    if not lora_cfg.get("enabled", False):
+        return model
 
+    # BaseTrainer -> RoboKosMos 접근
+    robovlm = model.model
+    backbone = robovlm.backbone
+
+    target_modules = set(lora_cfg.get("target_modules", []))
+    target_layer_indices = set(lora_cfg.get("target_layer_indices", []))
+
+    selected_module_names = []
+
+    for name, module in backbone.named_modules():
+        if not isinstance(module, nn.Linear):
+            continue
+
+        short_name = name.split(".")[-1]
+        if short_name not in target_modules:
+            continue
+
+        m = re.search(r"\.layers\.(\d+)\.", name)
+        if m is None:
+            continue
+
+        layer_idx = int(m.group(1))
+        if target_layer_indices and layer_idx not in target_layer_indices:
+            continue
+
+        selected_module_names.append(name)
+
+    print("\n[LoRA] selected modules:")
+    for n in selected_module_names[:50]:
+        print(" ", n)
+    if len(selected_module_names) > 50:
+        print(f" ... ({len(selected_module_names) - 50} more)")
+    print(f"[LoRA] total selected modules: {len(selected_module_names)}")
+
+    peft_config = LoraConfig(
+        r=lora_cfg["r"],
+        lora_alpha=lora_cfg["alpha"],
+        lora_dropout=lora_cfg["dropout"],
+        bias=lora_cfg.get("bias", "none"),
+        target_modules=selected_module_names,
+        task_type=lora_cfg.get("task_type", "CAUSAL_LM"),
+    )
+
+    # backbone에만 LoRA 적용
+    robovlm.backbone = get_peft_model(backbone, peft_config)
+
+    if lora_cfg.get("freeze_non_lora", False):
+        for name, p in model.named_parameters():
+            lname = name.lower()
+            if "lora_" in lname:
+                p.requires_grad = True
+            elif "act_head" in name or "action_token" in name:
+                p.requires_grad = True
+            else:
+                p.requires_grad = False
+
+    return model
 
 def maybe_override_dataset_path(variant):
     for split in ["train_dataset", "val_dataset"]:

@@ -49,7 +49,7 @@ class BaseTrainer(pl.LightningModule):
             use_vision_resampler=self.configs.get("use_vision_resampler", False),
             vision_resampler_configs=self.configs.get("vision_resampler", None),
             use_clip_norm=self.configs.get("use_clip_norm", False),
-            use_state=self.configs.get("use_state, False", False),
+            use_state=self.configs.get("use_state", False),
         )
         model = model.train()
         total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

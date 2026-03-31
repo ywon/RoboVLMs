@@ -1,189 +1,151 @@
-import json
-from pathlib import Path
 import os
-import importlib
+import json
+import importlib.util
+from pathlib import Path
+
 import torch
-import torch.nn as nn
-import torch.distributed as dist
-
-from robovlms.train.base_trainer import BaseTrainer
 
 
-def deep_update(d1, d2):
-    for k, v in d2.items():
-        if isinstance(v, dict) and k in d1 and isinstance(d1[k], dict):
-            deep_update(d1[k], v)
-        else:
-            d1[k] = v
-    return d1
+def load_custom_apply_lora(py_file_path: str):
+    spec = importlib.util.spec_from_file_location("custom_lora_module", py_file_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    if not hasattr(module, "apply_lora_to_model"):
+        raise AttributeError(f"`apply_lora_to_model` not found in {py_file_path}")
+
+    return module.apply_lora_to_model
 
 
-def load_config(config_file):
-    with open(config_file, "r", encoding="utf-8") as f:
-        _config = json.load(f)
-    config = {}
-    if _config.get("parent", None):
-        deep_update(config, load_config(_config["parent"]))
-    deep_update(config, _config)
-    return config
+def print_trainable_only(model, title="", max_items=500):
+    total = 0
+    trainable = 0
+    items = []
 
+    for name, p in model.named_parameters():
+        n = p.numel()
+        total += n
+        if p.requires_grad:
+            trainable += n
+            items.append((name, tuple(p.shape), n))
 
-def maybe_override_dataset_path(variant):
-    for split in ["train_dataset", "val_dataset"]:
-        if split not in variant or variant[split] is None:
-            continue
-        if variant.get("data_dir") is not None:
-            variant[split]["data_dir"] = variant["data_dir"]
-        if variant.get("annotation_file") is not None:
-            variant[split]["annotation_file"] = variant["annotation_file"]
-        if variant.get("data_subfolder") is not None:
-            variant[split]["data_subfolder"] = variant["data_subfolder"]
-        if variant.get("task_num") is not None:
-            variant[split]["task_num"] = variant["task_num"]
-        if variant.get("seq_len") is not None:
-            variant[split]["seq_len"] = variant["seq_len"]
-    return variant
+    print("\n" + "=" * 100)
+    print(f"[TRAINABLE ONLY] {title}")
+    print("=" * 100)
+    print(f"Total params     : {total:,}")
+    print(f"Trainable params : {trainable:,}")
+    print(f"Trainable ratio  : {100.0 * trainable / total:.4f}%")
+    print(f"Trainable tensors: {len(items)}")
 
-
-def find_lora_target_root(model):
-    candidates = []
-
-    if hasattr(model, "model"):
-        candidates.append(("model.model", model.model))
-
-    if hasattr(model, "model"):
-        inner = model.model
-        for attr in ["language_model", "llm", "lm", "model", "backbone", "text_model", "module"]:
-            if hasattr(inner, attr):
-                candidates.append((f"model.model.{attr}", getattr(inner, attr)))
-
-    preferred_order = [
-        "model.model.language_model",
-        "model.model.llm",
-        "model.model.lm",
-        "model.model.model",
-        "model.model.backbone",
-        "model.model.text_model",
-        "model.model",
-    ]
-
-    for preferred in preferred_order:
-        for name, module in candidates:
-            if name == preferred:
-                return name, module
-
-    raise ValueError("Could not find a suitable root module for LoRA.")
-
-
-def summarize_trainable_params(model):
-    total_params = 0
-    trainable_params = 0
-
-    trainable_names = []
-    vision_trainable = []
-    text_trainable = []
-    other_trainable = []
-
-    for name, param in model.named_parameters():
-        n = param.numel()
-        total_params += n
-
-        if param.requires_grad:
-            trainable_params += n
-            trainable_names.append(name)
-
-            lname = name.lower()
-            if "vision" in lname or "image" in lname or "visual" in lname:
-                vision_trainable.append(name)
-            elif "text" in lname or "language" in lname or "llm" in lname or "lm" in lname:
-                text_trainable.append(name)
-            else:
-                other_trainable.append(name)
-
-    print("\n[INFO] ===== parameter summary =====")
-    print(f"total params:      {total_params:,}")
-    print(f"trainable params:  {trainable_params:,}")
-    print(f"trainable ratio:   {100.0 * trainable_params / total_params:.4f}%")
-
-    print("\n[INFO] ===== trainable counts by rough group =====")
-    print(f"vision-like trainable params: {len(vision_trainable)} tensors")
-    print(f"text-like trainable params:   {len(text_trainable)} tensors")
-    print(f"other trainable params:       {len(other_trainable)} tensors")
-
-    print("\n[INFO] ===== first 100 trainable parameter names =====")
-    for name in trainable_names[:100]:
-        print(name)
-
-    print("\n[INFO] ===== vision-related trainable parameter names =====")
-    if vision_trainable:
-        for name in vision_trainable[:200]:
-            print(name)
-    else:
+    print("\n--- Trainable parameter names ---")
+    if not items:
         print("(none)")
+        return
 
-    print("\n[INFO] ===== text-related trainable parameter names =====")
-    if text_trainable:
-        for name in text_trainable[:200]:
-            print(name)
-    else:
+    for i, (name, shape, numel) in enumerate(items[:max_items]):
+        print(f"{i:03d} | {name:120s} | shape={str(shape):20s} | numel={numel:,}")
+
+    if len(items) > max_items:
+        print(f"... ({len(items) - max_items} more)")
+
+
+def print_trainable_lora_only(model, title="", max_items=500):
+    items = []
+    total = 0
+
+    for name, p in model.named_parameters():
+        lname = name.lower()
+        if p.requires_grad and ("lora_a" in lname or "lora_b" in lname):
+            items.append((name, tuple(p.shape), p.numel()))
+            total += p.numel()
+
+    print("\n" + "=" * 100)
+    print(f"[TRAINABLE LORA ONLY] {title}")
+    print("=" * 100)
+    print(f"LoRA trainable params : {total:,}")
+    print(f"LoRA tensors          : {len(items)}")
+
+    if not items:
         print("(none)")
+        return
 
-    print("\n[INFO] ===== other trainable parameter names =====")
-    if other_trainable:
-        for name in other_trainable[:200]:
-            print(name)
-    else:
+    for i, (name, shape, numel) in enumerate(items[:max_items]):
+        print(f"{i:03d} | {name:120s} | shape={str(shape):20s} | numel={numel:,}")
+
+    if len(items) > max_items:
+        print(f"... ({len(items) - max_items} more)")
+
+
+def print_trainable_state_only(model, title="", max_items=100):
+    keywords = ["embed_state", "embed_arm_state", "embed_gripper_state"]
+    items = []
+    total = 0
+
+    for name, p in model.named_parameters():
+        if p.requires_grad and any(k in name for k in keywords):
+            items.append((name, tuple(p.shape), p.numel()))
+            total += p.numel()
+
+    print("\n" + "=" * 100)
+    print(f"[TRAINABLE STATE ONLY] {title}")
+    print("=" * 100)
+    print(f"State trainable params : {total:,}")
+    print(f"State tensors          : {len(items)}")
+
+    if not items:
         print("(none)")
+        return
 
-
-def inspect_linear_modules(root_module):
-    print("\n[INFO] ===== full linear module names =====")
-    candidate_targets = set()
-
-    for name, module in root_module.named_modules():
-        if isinstance(module, nn.Linear):
-            print(name)
-
-            parts = name.split(".")
-            if parts[-1] == "base_layer" and len(parts) >= 2:
-                candidate_targets.add(parts[-2])
-            elif "lora_A" in parts or "lora_B" in parts:
-                continue
-            else:
-                candidate_targets.add(parts[-1])
-
-    print("\n[INFO] ===== candidate target_modules =====")
-    for name in sorted(candidate_targets):
-        print(name)
+    for i, (name, shape, numel) in enumerate(items[:max_items]):
+        print(f"{i:03d} | {name:120s} | shape={str(shape):20s} | numel={numel:,}")
 
 
 def main():
     config_path = "/home/yewon/RoboVLMs/pretrained/robovlms/configs/kosmos_ph_finetune.json"
-    model_load_path = "/home/yewon/RoboVLMs/pretrained/robovlms/checkpoints/kosmos_ph_oxe-pretrain.pt"
+    custom_lora_py = "/home/yewon/RoboVLMs/robovlm_calvin_experiment/fine_tune.py"
 
-    variant = load_config(config_path)
-    variant = maybe_override_dataset_path(variant)
+    from robovlms.train.base_trainer import BaseTrainer
 
-    print("\n[INFO] ===== config summary =====")
-    print("train_vision:", variant.get("train_setup", {}).get("train_vision"))
-    print("freeze_backbone:", variant.get("train_setup", {}).get("freeze_backbone"))
-    print("lora enabled:", variant.get("lora", {}).get("enabled"))
-    print("lora targets:", variant.get("lora", {}).get("target_modules"))
-    print("freeze_non_lora:", variant.get("lora", {}).get("freeze_non_lora"))
+    with open(config_path, "r", encoding="utf-8") as f:
+        variant = json.load(f)
 
-    model = BaseTrainer.from_checkpoint(
-        model_load_path or variant.get("model_load_path", None),
-        variant.get("model_load_source", "torch"),
-        variant,
-    )
+    # base trainer 쪽 lora는 끄고 custom lora만 사용
+    if "train_setup" in variant:
+        variant["train_setup"]["lora_enable"] = False
 
-    root_name, root_module = find_lora_target_root(model)
+    print("=" * 100)
+    print("Loaded config")
+    print("=" * 100)
+    print("config use_state =", variant.get("use_state", None))
+    print("config lora.enabled =", variant.get("lora", {}).get("enabled", None))
+    print("config lora.r =", variant.get("lora", {}).get("r", None))
+    print("config lora.target_modules =", variant.get("lora", {}).get("target_modules", None))
 
-    print(f"\n[INFO] LoRA root: {root_name}")
-    print(f"[INFO] root type: {type(root_module)}")
+    trainer = BaseTrainer(variant)
+    model = trainer.model
 
-    inspect_linear_modules(root_module)
-    summarize_trainable_params(model)
+    print("\n[DEBUG] model.model.use_state =", getattr(model.model, "use_state", None))
+    print("[DEBUG] has embed_state =", hasattr(model.model, "embed_state"))
+    print("[DEBUG] has embed_arm_state =", hasattr(model.model, "embed_arm_state"))
+    print("[DEBUG] has embed_gripper_state =", hasattr(model.model, "embed_gripper_state"))
+
+    print_trainable_only(model, title="Before custom LoRA apply")
+    print_trainable_lora_only(model, title="Before custom LoRA apply")
+    print_trainable_state_only(model, title="Before custom LoRA apply")
+
+    apply_lora_to_model = load_custom_apply_lora(custom_lora_py)
+
+    print("\nApplying custom LoRA...")
+    model = apply_lora_to_model(model, variant.get("lora", {}))
+
+    print("\n[DEBUG] after LoRA, model.model.use_state =", getattr(model.model, "use_state", None))
+    print("[DEBUG] after LoRA, has embed_state =", hasattr(model.model, "embed_state"))
+    print("[DEBUG] after LoRA, has embed_arm_state =", hasattr(model.model, "embed_arm_state"))
+    print("[DEBUG] after LoRA, has embed_gripper_state =", hasattr(model.model, "embed_gripper_state"))
+
+    print_trainable_only(model, title="After custom LoRA apply")
+    print_trainable_lora_only(model, title="After custom LoRA apply")
+    print_trainable_state_only(model, title="After custom LoRA apply")
 
 
 if __name__ == "__main__":
