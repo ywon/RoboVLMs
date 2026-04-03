@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from multiprocessing import Value
 import numpy as np
 from PIL import Image
+import csv
+import sys
+from pathlib import Path
 
 import robovlms
 from robovlms.utils.model_utils import build_tokenizer
@@ -22,6 +25,10 @@ from robovlms.data.data_utils import (
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
+
+sys.path.insert(0, "/home/yewon/RoboVLMs/calvin/calvin_models")
+sys.path.insert(0, "/home/yewon/RoboVLMs/calvin")
+sys.path.insert(0, "/home/yewon/RoboVLMs")
 
 class _PyhashCompat:
     @staticmethod
@@ -58,11 +65,12 @@ try:
     from torch.utils.data import Dataset
     from robovlms.data.data_utils import get_prompt_builder, world_to_tcp_frame
     from robovlms.model.policy_head.action_tokenizer import ActionTokenizer
-    hasher = _PyhashCompat().fnv1_32()
-    logger = logging.getLogger(__name__)
 
-except:
-    pass
+    logger = logging.getLogger(__name__)
+    hasher = _PyhashCompat().fnv1_32()
+
+except Exception as e:
+    print("[WARN] optional imports in calvin_dataset.py failed:", e)
 
 Image.MAX_IMAGE_PIXELS = 1000000000
 MAX_NUM_TOKENS = 256
@@ -540,10 +548,13 @@ class BaseCalvinDataset(Dataset):
 class DiskCalvinDataset(BaseCalvinDataset):
     """
     Dataset that loads episodes as individual files from disk.
-    Args:
-        skip_frames: Skip this amount of windows for language dataset.
-        save_format: File format in datasets_dir (pkl or npz).
-        pretrain: Set to True when pretraining.
+
+    Added:
+        - segment_csv: path to preprocessed CSV
+        - use_segment_csv: if True, build dataset indices from CSV instead of auto_lang_ann.npy
+
+    Expected CSV columns:
+        seg_id, task, instruction, start_frame, end_frame, frame_count, scene_filter
     """
 
     def __init__(
@@ -569,6 +580,8 @@ class DiskCalvinDataset(BaseCalvinDataset):
         tcp_rel=False,
         few_shot=False,
         exclude_tasks=[],
+        segment_csv: str = None,
+        use_segment_csv: bool = False,
         **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
@@ -593,18 +606,32 @@ class DiskCalvinDataset(BaseCalvinDataset):
         self.tcp_rel = tcp_rel
         self.few_shot = few_shot
         self.exclude_tasks = exclude_tasks
+        self.segment_csv = segment_csv
+        self.use_segment_csv = use_segment_csv
+
         print(self.task_type)
 
         self.naming_pattern, self.n_digits = lookup_naming_pattern(
             self.abs_datasets_dir, self.save_format
         )
-        (
-            self.episode_lookup,
-            self.lang_lookup,
-            self.right_pad_lookup,
-            self.lang_ann,
-            self.lang_task,
-        ) = self._build_file_indices_lang(self.abs_datasets_dir)
+
+        if self.use_segment_csv:
+            assert self.segment_csv is not None, "segment_csv must be provided when use_segment_csv=True"
+            (
+                self.episode_lookup,
+                self.lang_lookup,
+                self.right_pad_lookup,
+                self.lang_ann,
+                self.lang_task,
+            ) = self._build_file_indices_lang_from_csv()
+        else:
+            (
+                self.episode_lookup,
+                self.lang_lookup,
+                self.right_pad_lookup,
+                self.lang_ann,
+                self.lang_task,
+            ) = self._build_file_indices_lang_from_npy(self.abs_datasets_dir)
 
         self.model_name = model_name
         self.discrete_action = discrete_action
@@ -671,15 +698,10 @@ class DiskCalvinDataset(BaseCalvinDataset):
         episode["image_mask"] = image_mask
         return episode
 
-    def _build_file_indices_lang(self, abs_datasets_dir: Path):
+    def _build_file_indices_lang_from_npy(self, abs_datasets_dir: Path):
         """
-        This method builds the mapping from index to file_name used for loading the episodes of the language dataset.
-        Args:
-            abs_datasets_dir: Absolute path of the directory containing the dataset.
-        Returns:
-            episode_lookup: Mapping from training example index to episode (file) index.
-            lang_lookup: Mapping from training example to index of language instruction.
-            lang_ann: Language embeddings.
+        Original behavior:
+        Build mapping from index to file_name using auto_lang_ann.npy.
         """
         assert abs_datasets_dir.is_dir()
 
@@ -704,15 +726,14 @@ class DiskCalvinDataset(BaseCalvinDataset):
                 abs_datasets_dir / "auto_lang_ann.npy", allow_pickle=True
             ).item()
 
-        ep_start_end_ids = lang_data["info"]["indx"]  # each of them are 64
-        lang_ann = lang_data["language"]["ann"]  # length total number of annotations
+        ep_start_end_ids = lang_data["info"]["indx"]
+        lang_ann = lang_data["language"]["ann"]
         lang_task = lang_data["language"]["task"]
         lang_lookup = []
-        # add support for partial calvin data
-        # partial_st_ed_list = []
+
         partial_st_ed_list = load_partial_traj_data()
         few_shot_st_ed_list = load_few_shot_traj_data()
-        # import pdb; pdb.set_trace()
+
         for i, (start_idx, end_idx) in enumerate(ep_start_end_ids):
             if self.partial_data:
                 if (start_idx, end_idx) not in partial_st_ed_list:
@@ -722,6 +743,7 @@ class DiskCalvinDataset(BaseCalvinDataset):
                     continue
             if lang_task[i] in self.exclude_tasks:
                 continue
+
             cnt = 0
             right_pad = end_idx - start_idx - self.act_step - self.window_size + 1
             for idx in range(start_idx, end_idx + 1 - self.window_size):
@@ -731,6 +753,88 @@ class DiskCalvinDataset(BaseCalvinDataset):
                     right_pad_lookup.append(min(0, right_pad))
                 right_pad -= 1
                 cnt += 1
+
+        return (
+            np.array(episode_lookup),
+            lang_lookup,
+            right_pad_lookup,
+            list(lang_ann),
+            list(lang_task),
+        )
+
+    def _build_file_indices_lang_from_csv(self):
+        """
+        Build mapping from index to file_name using preprocessed CSV.
+
+        Expected CSV columns:
+            - task
+            - instruction
+            - start_frame
+            - end_frame
+
+        Optional columns:
+            - keep (only rows with keep==1 are used)
+        """
+        csv_path = Path(self.segment_csv)
+        assert csv_path.exists(), f"CSV file not found: {csv_path}"
+
+        print(f"loading filtered segment csv from: {csv_path}")
+
+        episode_lookup = []
+        right_pad_lookup = []
+        lang_lookup = []
+        lang_ann = []
+        lang_task = []
+
+        partial_st_ed_list = load_partial_traj_data()
+        few_shot_st_ed_list = load_few_shot_traj_data()
+
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+
+            for row in reader:
+                # optional keep column support
+                if "keep" in row and str(row["keep"]).strip() != "":
+                    try:
+                        if int(row["keep"]) != 1:
+                            continue
+                    except ValueError:
+                        pass
+
+                task = row["task"]
+                instruction = row["instruction"]
+                start_idx = int(row["start_frame"])
+                end_idx = int(row["end_frame"])
+
+                if task in self.exclude_tasks:
+                    continue
+
+                if self.partial_data:
+                    if (start_idx, end_idx) not in partial_st_ed_list:
+                        continue
+
+                if self.few_shot:
+                    if (start_idx, end_idx) not in few_shot_st_ed_list:
+                        continue
+
+                # save annotation entry for this segment
+                ann_idx = len(lang_ann)
+                lang_ann.append(instruction)
+                lang_task.append(task)
+
+                cnt = 0
+                right_pad = end_idx - start_idx - self.act_step - self.window_size + 1
+
+                for idx in range(start_idx, end_idx + 1 - self.window_size):
+                    if cnt % self.skip_frames == 0:
+                        lang_lookup.append(ann_idx)
+                        episode_lookup.append(idx)
+                        right_pad_lookup.append(min(0, right_pad))
+                    right_pad -= 1
+                    cnt += 1
+
+        print(f"loaded {len(lang_ann)} segments from csv")
+        print(f"built {len(episode_lookup)} sliding-window samples from csv")
 
         return (
             np.array(episode_lookup),
@@ -767,14 +871,11 @@ class DiskCalvinDataset(BaseCalvinDataset):
         return np.array(episode_lookup), right_pad_lookup
 
     def wrap_instruction_and_action(self, lang, action, action_mask):
-        # modified from OpenVLA
         IGNORE_INDEX = -100
         prompt_builder = get_prompt_builder(
             self.model_name, eos=self.tokenizer.eos_token, bos=self.tokenizer.bos_token
         )
-        # if pass in multi-step actions, we concat them
         action_mask = action_mask.astype(bool)
-        # action = action[:-1]
         action_dim = action.shape[1]
         action = action.flatten()
         conversation = [
@@ -792,7 +893,6 @@ class DiskCalvinDataset(BaseCalvinDataset):
         for turn in conversation:
             prompt_builder.add_turn(turn["from"], turn["value"])
 
-        # Tokenize (w/ `base_tokenizer`)
         input_ids = self.tokenizer(
             prompt_builder.get_prompt(), add_special_tokens=True
         ).input_ids
@@ -836,9 +936,7 @@ class DiskCalvinDataset(BaseCalvinDataset):
         all_labels = torch.stack(all_labels)
         return all_input_ids, all_labels
 
-    # NOTE
     def collater(self, sample):
-        # forward transformation of mu law companding
         if self.norm_action:
             new_sample = []
             for s in sample:
@@ -854,7 +952,6 @@ class DiskCalvinDataset(BaseCalvinDataset):
                 s["actions"] = regularize_action(s["actions"], self.x_mean, self.x_std)
                 new_sample.append(s)
             sample = new_sample
-            pass
 
         if self.use_mu_law:
             new_sample = []
@@ -904,10 +1001,6 @@ class DiskCalvinDataset(BaseCalvinDataset):
             0, 1, 3, 2
         )
         action_mask = action_mask.unfold(1, self.fwd_pred_next_n, 1)
-
-        # robot_obs_chunk = robot_obs.unfold(1, self.fwd_pred_next_n, 1).permute(0, 1, 3, 2)
-        # if self.tcp_rel:
-        #     action_chunck = world_to_tcp_frame(action_chunck, robot_obs_chunk)
 
         bs = len(sample)
         instr_and_action_ids = None

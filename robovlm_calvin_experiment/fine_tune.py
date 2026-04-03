@@ -272,7 +272,7 @@ def collect_all_linear_target_names(root_module):
     target_names = [n for n in sorted(target_names) if n not in blacklist]
     return target_names
 
-'''
+
 def apply_lora_to_model(model, lora_cfg: Dict[str, Any]):
     if not lora_cfg.get("enabled", False):
         print("[INFO] LoRA disabled.")
@@ -336,6 +336,7 @@ def apply_lora_to_model(model, lora_cfg: Dict[str, Any]):
     count_trainable_parameters(model)
     print_lora_trainable_params(model)
     return model
+
 '''
 def apply_lora_to_model(model, lora_cfg):
     if not lora_cfg.get("enabled", False):
@@ -398,6 +399,7 @@ def apply_lora_to_model(model, lora_cfg):
                 p.requires_grad = False
 
     return model
+'''
 
 def maybe_override_dataset_path(variant):
     for split in ["train_dataset", "val_dataset"]:
@@ -416,7 +418,6 @@ def maybe_override_dataset_path(variant):
             variant[split]["seq_len"] = variant["seq_len"]
 
     return variant
-
 
 def experiment(variant):
     rank = int(os.environ.get("RANK", 0))
